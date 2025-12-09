@@ -32,7 +32,7 @@ High-performance desktop application for 360° video preprocessing. This tool ge
 
 Run the application:
 ```bash
-python src/main.py
+python3 src/main.py
 ```
 
 ### Batch Processing Workflow
