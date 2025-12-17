@@ -1,61 +1,77 @@
+"""
+CLI Processor - Adapter for processing videos without Qt signals.
+Provides synchronous processing with terminal-friendly progress output.
+"""
+
+import sys
 import cv2
 import numpy as np
 import os
 import time
 from collections import deque
-from PySide6.QtCore import QObject, Signal
 
 from core.geometry import GeometryProcessor
 from core.ai_model import AIService
 from utils.file_manager import FileManager
 from utils.image_utils import ImageUtils
 
-class ProcessingWorker(QObject):
-    """
-    Worker class to handle video processing in a separate thread.
-    """
-    progress_updated = Signal(int, str) # value (0-100), message
-    job_started = Signal(int)
-    job_finished = Signal(int)
-    finished = Signal()
-    error_occurred = Signal(str)
 
+class CLIProcessor:
+    """
+    Process videos from CLI without Qt dependencies.
+    Provides terminal output instead of GUI signals.
+    """
+    
     def __init__(self, jobs):
-        super().__init__()
+        """
+        Initialize CLI processor.
+        
+        Args:
+            jobs: List of Job objects to process
+        """
         self.jobs = jobs
-        self.is_running = True
+        self.ai_service = None
         
         # Initialize AI Service if needed
-        self.ai_service = None
         needs_ai = any(job.settings.get('ai_mode', 'None') != 'None' for job in self.jobs)
         
         if needs_ai:
-             # Initialize YOLO model
-             # Note: Using 'yolov8n-seg.pt' (nano) for performance.
-             self.ai_service = AIService('yolov8n-seg.pt')
-
-    def stop(self):
-        self.is_running = False
-
-    def run(self):
+            print("Loading AI model (YOLOv8)...")
+            self.ai_service = AIService('yolov8n-seg.pt')
+            print("AI model loaded.\n")
+    
+    def process_all(self):
+        """
+        Process all jobs sequentially.
+        
+        Returns:
+            bool: True if all jobs succeeded, False otherwise
+        """
         total_jobs = len(self.jobs)
+        success_count = 0
         
         for i, job in enumerate(self.jobs):
-            if not self.is_running:
-                break
+            print(f"\n[{i+1}/{total_jobs}] Processing: {job.filename}")
+            print("-" * 60)
             
-            self.job_started.emit(i)
             try:
                 self.process_video(job, i, total_jobs)
-                self.job_finished.emit(i)
+                job.status = "Done"
+                success_count += 1
+                print(f"✓ Completed: {job.filename}")
             except Exception as e:
+                job.status = "Error"
+                print(f"✗ Error processing {job.filename}: {str(e)}", file=sys.stderr)
                 import traceback
                 traceback.print_exc()
-                self.error_occurred.emit(f"Error processing {os.path.basename(job.file_path)}: {str(e)}")
         
-        self.finished.emit()
-
+        return success_count == total_jobs
+    
     def process_video(self, job, job_index, total_jobs):
+        """
+        Process a single video job.
+        This is adapted from ProcessingWorker.process_video() but without Qt signals.
+        """
         file_path = job.file_path
         filename = os.path.basename(file_path)
         name_no_ext = os.path.splitext(filename)[0]
@@ -72,14 +88,14 @@ class ProcessingWorker(QObject):
             # Default: use video's directory
             base_output_dir = os.path.dirname(file_path)
 
-        # Create a specific subfolder for this video to keep things organized
+        # Create a specific subfolder for this video
         output_dir = os.path.join(base_output_dir, f"{name_no_ext}_processed")
         
         try:
             FileManager.ensure_directory(output_dir)
+            print(f"Output directory: {output_dir}")
         except OSError as e:
-            # If we can't create the directory (e.g. permission error), raise it
-            raise IOError(f"Cannot create or access output directory {output_dir}: {e}")
+            raise IOError(f"Cannot create output directory {output_dir}: {e}")
 
         # Determine Output Format & Params
         fmt = job.output_format.lower()
@@ -96,7 +112,7 @@ class ProcessingWorker(QObject):
         elif fmt == 'png':
             save_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
         elif fmt == 'tiff':
-            save_params = [cv2.IMWRITE_TIFF_COMPRESSION, 1] # 1 = NONE
+            save_params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
 
         cap = cv2.VideoCapture(file_path)
         if not cap.isOpened():
@@ -104,7 +120,10 @@ class ProcessingWorker(QObject):
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames_video <= 0: total_frames_video = 1 # Prevent division by zero
+        if total_frames_video <= 0: 
+            total_frames_video = 1
+        
+        print(f"Video info: {int(fps)} fps, {total_frames_video} frames")
         
         # Calculate extraction interval
         interval_value = float(job.settings.get('interval_value', 1.0))
@@ -112,8 +131,10 @@ class ProcessingWorker(QObject):
         
         if interval_unit == 'Frames':
             interval = int(max(1, interval_value))
-        else: # Seconds
+        else:
             interval = int(max(1, fps * interval_value))
+        
+        print(f"Extracting every {interval_value} {interval_unit.lower()} (frame interval: {interval})")
         
         # Geometry Settings
         out_res = job.settings.get('resolution', 1024)
@@ -121,7 +142,7 @@ class ProcessingWorker(QObject):
         camera_count = job.settings.get('camera_count', 6)
         pitch_offset = job.settings.get('pitch_offset', 0)
         
-        # AI Mode per job
+        # AI Mode
         ai_mode_ui = job.settings.get('ai_mode', 'None')
         ai_mode_internal = 'none'
         if ai_mode_ui == 'Skip Frame':
@@ -146,7 +167,7 @@ class ProcessingWorker(QObject):
         # Video Mode
         video_mode = job.settings.get('video_mode', '360')
         
-        # Get video dimensions (needed for 360 mode map generation)
+        # Get video dimensions
         src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
@@ -155,99 +176,70 @@ class ProcessingWorker(QObject):
         maps = {}
         
         if video_mode == '360':
-            # Generate views based on camera count
+            print(f"360° mode: Generating {camera_count} camera views (FOV: {fov}°, pitch: {pitch_offset}°)")
             views = GeometryProcessor.generate_views(camera_count, pitch_offset=pitch_offset)
-            
-            self.progress_updated.emit(0, f"Generating maps for {filename}...")
             
             for name, y, p, r in views:
                 maps[name] = GeometryProcessor.create_rectilinear_map(
                     src_h, src_w, out_res, out_res, fov, y, p, r
                 )
+            print(f"Reprojection maps generated.")
         else:
-            # FLAT mode - no reprojection needed
-            self.progress_updated.emit(0, f"Preparing to process flat video {filename}...")
+            print(f"FLAT mode: Extracting full frames ({src_w}x{src_h})")
 
         frame_idx = 0
+        saved_frame_count = 0
         job_start_time = time.time()
+        last_print_time = time.time()
         
-        while self.is_running:
+        print("\nProcessing frames...")
+        
+        while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
             if frame_idx % interval == 0:
-                # Progress calculation (per job 0-100%)
-                current_job_progress = int((frame_idx / total_frames_video) * 100)
-                
-                # ETA Calculation
-                elapsed = time.time() - job_start_time
-                if frame_idx > 0 and elapsed > 0:
-                    rate = frame_idx / elapsed # frames per second
-                    remaining_frames = total_frames_video - frame_idx
-                    eta_seconds = remaining_frames / rate
-                    eta_min = int(eta_seconds // 60)
-                    eta_sec = int(eta_seconds % 60)
-                    eta_str = f"ETA: {eta_min}m {eta_sec}s"
-                else:
-                    eta_str = "ETA: --m --s"
-
-                self.progress_updated.emit(
-                    current_job_progress,
-                    f"Processing {filename} - Frame {frame_idx}/{total_frames_video} - {eta_str}"
-                )
+                # Progress output (print every 2 seconds to avoid spam)
+                current_time = time.time()
+                if current_time - last_print_time >= 2.0 or frame_idx == 0:
+                    progress = int((frame_idx / total_frames_video) * 100)
+                    elapsed = current_time - job_start_time
+                    
+                    if frame_idx > 0 and elapsed > 0:
+                        rate = frame_idx / elapsed
+                        remaining_frames = total_frames_video - frame_idx
+                        eta_seconds = remaining_frames / rate
+                        eta_min = int(eta_seconds // 60)
+                        eta_sec = int(eta_seconds % 60)
+                        print(f"  Frame {frame_idx}/{total_frames_video} ({progress}%) - ETA: {eta_min}m {eta_sec}s", flush=True)
+                    else:
+                        print(f"  Frame {frame_idx}/{total_frames_video} ({progress}%)", flush=True)
+                    
+                    last_print_time = current_time
 
                 if video_mode == '360':
                     # 360° MODE: Process each reprojected view
                     for name, _, _, _ in views:
                         map_x, map_y = maps[name]
-                        # 1. Reproject
                         rect_img = cv2.remap(frame, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
                         
-                        # 2. Blur Detection
+                        # Blur Detection
                         if blur_enabled:
                             score = ImageUtils.calculate_blur_score(rect_img)
-                            is_blurry = False
+                            is_blurry = self._check_blur(score, blur_threshold, smart_blur_enabled, 
+                                                        blur_history, consecutive_blur_skips)
                             
-                            if smart_blur_enabled:
-                                # 1. Check Minimum Floor (Safety net against black/garbage frames)
-                                if score < blur_threshold:
-                                    is_blurry = True
-                                
-                                # 2. Adaptive Check
-                                elif len(blur_history) > 0:
-                                    avg_score = sum(blur_history) / len(blur_history)
-                                    if score < avg_score * 0.6:
-                                        is_blurry = True
-                                        
-                                # 3. Safety Override (Force accept if too many consecutive skips)
-                                if is_blurry:
-                                    consecutive_blur_skips += 1
-                                    if consecutive_blur_skips > 5:
-                                        print(f"Force accepting frame due to consecutive skips: {filename} - Frame {frame_idx}")
-                                        is_blurry = False
-                                        consecutive_blur_skips = 0
-                                
-                                # 4. Update History (if accepted, either naturally or forced)
-                                if not is_blurry:
-                                    consecutive_blur_skips = 0
-                                    blur_history.append(score)
-                            else:
-                                # Standard Mode
-                                if score < blur_threshold:
-                                    is_blurry = True
-
                             if is_blurry:
-                                print(f"Skipped blurry view: {filename} - Frame {frame_idx} - {name} (Score: {score:.1f})")
                                 skipped_blur_count += 1
                                 continue
 
-                        # 3. Sharpening (Post-Reprojection Recovery)
+                        # Sharpening
                         if sharpen_enabled:
                             gaussian = cv2.GaussianBlur(rect_img, (0, 0), 2.0)
                             rect_img = cv2.addWeighted(rect_img, 1.0 + sharpen_strength, gaussian, -sharpen_strength, 0)
 
-                        # 4. AI Processing
+                        # AI Processing
                         final_img = rect_img
                         mask_or_skip = None
                         
@@ -255,15 +247,15 @@ class ProcessingWorker(QObject):
                             final_img, result_extra = self.ai_service.process_image(rect_img, mode=ai_mode_internal)
                             
                             if ai_mode_internal == 'skip_frame' and result_extra is True:
-                                # Person detected, skip this view
                                 continue
                             elif ai_mode_internal == 'generate_mask':
                                 mask_or_skip = result_extra
                         
-                        # 5. Save
+                        # Save
                         if final_img is not None:
                             save_name = f"{name_no_ext}_frame{frame_idx:06d}_{name}{ext}"
                             FileManager.save_image(os.path.join(output_dir, save_name), final_img, save_params)
+                            saved_frame_count += 1
                             
                             if mask_or_skip is not None and isinstance(mask_or_skip, np.ndarray):
                                 # Create mask subfolder
@@ -274,71 +266,42 @@ class ProcessingWorker(QObject):
                                 FileManager.save_mask(os.path.join(mask_dir, mask_name), mask_or_skip)
                 
                 else:
-                    # FLAT MODE: Process the full frame directly
+                    # FLAT MODE: Process the full frame
                     final_img = frame.copy()
                     
-                    # 1. Blur Detection
+                    # Blur Detection
                     if blur_enabled:
                         score = ImageUtils.calculate_blur_score(final_img)
-                        is_blurry = False
+                        is_blurry = self._check_blur(score, blur_threshold, smart_blur_enabled, 
+                                                    blur_history, consecutive_blur_skips)
                         
-                        if smart_blur_enabled:
-                            # 1. Check Minimum Floor
-                            if score < blur_threshold:
-                                is_blurry = True
-                            
-                            # 2. Adaptive Check
-                            elif len(blur_history) > 0:
-                                avg_score = sum(blur_history) / len(blur_history)
-                                if score < avg_score * 0.6:
-                                    is_blurry = True
-                                    
-                            # 3. Safety Override
-                            if is_blurry:
-                                consecutive_blur_skips += 1
-                                if consecutive_blur_skips > 5:
-                                    print(f"Force accepting frame due to consecutive skips: {filename} - Frame {frame_idx}")
-                                    is_blurry = False
-                                    consecutive_blur_skips = 0
-                            
-                            # 4. Update History
-                            if not is_blurry:
-                                consecutive_blur_skips = 0
-                                blur_history.append(score)
-                        else:
-                            # Standard Mode
-                            if score < blur_threshold:
-                                is_blurry = True
-
                         if is_blurry:
-                            print(f"Skipped blurry frame: {filename} - Frame {frame_idx} (Score: {score:.1f})")
                             skipped_blur_count += 1
                             frame_idx += 1
                             continue
                     
-                    # 2. Sharpening
+                    # Sharpening
                     if sharpen_enabled:
                         gaussian = cv2.GaussianBlur(final_img, (0, 0), 2.0)
                         final_img = cv2.addWeighted(final_img, 1.0 + sharpen_strength, gaussian, -sharpen_strength, 0)
                     
-                    # 3. AI Processing
+                    # AI Processing
                     mask_or_skip = None
                     
                     if self.ai_service and ai_mode_internal != 'none':
                         final_img, result_extra = self.ai_service.process_image(final_img, mode=ai_mode_internal)
                         
                         if ai_mode_internal == 'skip_frame' and result_extra is True:
-                            # Person detected, skip this frame
-                            print(f"Skipped frame with person: {filename} - Frame {frame_idx}")
                             frame_idx += 1
                             continue
                         elif ai_mode_internal == 'generate_mask':
                             mask_or_skip = result_extra
                     
-                    # 4. Save
+                    # Save
                     if final_img is not None:
                         save_name = f"{name_no_ext}_frame{frame_idx:06d}{ext}"
                         FileManager.save_image(os.path.join(output_dir, save_name), final_img, save_params)
+                        saved_frame_count += 1
                         
                         if mask_or_skip is not None and isinstance(mask_or_skip, np.ndarray):
                             # Create mask subfolder
@@ -351,6 +314,39 @@ class ProcessingWorker(QObject):
             frame_idx += 1
             
         cap.release()
-
+        
+        print(f"\nSaved {saved_frame_count} images")
         if skipped_blur_count > 0:
-            print(f"Total blurry views skipped for {filename}: {skipped_blur_count}")
+            print(f"Skipped {skipped_blur_count} blurry frames")
+    
+    def _check_blur(self, score, threshold, smart_mode, history, consecutive_skips):
+        """Helper method to check if a frame is blurry."""
+        is_blurry = False
+        
+        if smart_mode:
+            # Minimum floor check
+            if score < threshold:
+                is_blurry = True
+            # Adaptive check
+            elif len(history) > 0:
+                avg_score = sum(history) / len(history)
+                if score < avg_score * 0.6:
+                    is_blurry = True
+            
+            # Safety override
+            if is_blurry:
+                consecutive_skips += 1
+                if consecutive_skips > 5:
+                    is_blurry = False
+                    consecutive_skips = 0
+            
+            # Update history
+            if not is_blurry:
+                consecutive_skips = 0
+                history.append(score)
+        else:
+            # Standard mode
+            if score < threshold:
+                is_blurry = True
+        
+        return is_blurry

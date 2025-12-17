@@ -353,6 +353,14 @@ class MainWindow(QMainWindow):
         camera_layout = QVBoxLayout(tab_camera)
         camera_layout.setSpacing(15)
 
+        # Video Mode
+        self.video_mode_combo = QComboBox()
+        self.video_mode_combo.addItem("360°", "360")
+        self.video_mode_combo.addItem("Flat/Regular", "FLAT")
+        self.video_mode_combo.currentIndexChanged.connect(self.on_video_mode_changed)
+        self.video_mode_combo.installEventFilter(self.scroll_blocker)
+        self.add_setting_row(camera_layout, "Video Mode:", self.video_mode_combo, "Choose between 360° equirectangular or regular flat video processing.")
+
         # FOV
         self.fov_spin = QSpinBox()
         self.fov_spin.setRange(60, 120)
@@ -518,6 +526,7 @@ class MainWindow(QMainWindow):
 
     def get_settings_from_ui(self):
         return {
+            'video_mode': self.video_mode_combo.currentData(),
             'output_format': self.format_combo.currentText(),
             'custom_output_dir': self.custom_output_dir,
             'interval_value': self.interval_spin.value(),
@@ -537,6 +546,12 @@ class MainWindow(QMainWindow):
     def set_ui_from_settings(self, settings):
         # Block signals to prevent triggering on_setting_changed loops
         self.block_settings_signals(True)
+        
+        # Video Mode
+        video_mode = settings.get('video_mode', '360')
+        index = self.video_mode_combo.findData(video_mode)
+        if index >= 0:
+            self.video_mode_combo.setCurrentIndex(index)
         
         # Output Format
         self.format_combo.setCurrentText(settings.get('output_format', 'jpg'))
@@ -576,10 +591,14 @@ class MainWindow(QMainWindow):
         self.sharpen_check.setChecked(settings.get('sharpening_enabled', False))
         self.sharpen_slider.setValue(settings.get('sharpening_strength', 0.5))
         self.sharpen_slider.setEnabled(self.sharpen_check.isChecked())
+        
+        # Update video mode UI state
+        self.update_video_mode_ui_state()
 
         self.block_settings_signals(False)
 
     def block_settings_signals(self, block):
+        self.video_mode_combo.blockSignals(block)
         self.format_combo.blockSignals(block)
         self.interval_spin.blockSignals(block)
         self.interval_unit.blockSignals(block)
@@ -629,6 +648,22 @@ class MainWindow(QMainWindow):
     def on_sharpen_toggled(self, checked):
         self.sharpen_slider.setEnabled(checked)
         self.on_setting_changed()
+    
+    def on_video_mode_changed(self):
+        self.update_video_mode_ui_state()
+        self.on_setting_changed()
+    
+    def update_video_mode_ui_state(self):
+        """Enable/disable camera controls based on video mode."""
+        is_360_mode = self.video_mode_combo.currentData() == "360"
+        
+        # Camera controls only apply to 360° mode
+        self.fov_spin.setEnabled(is_360_mode)
+        self.cam_count_spin.setEnabled(is_360_mode)
+        self.pitch_combo.setEnabled(is_360_mode)
+        
+        # Resolution only applies to 360° mode (for FLAT, we use original resolution)
+        self.res_spin.setEnabled(is_360_mode)
 
     def on_setting_changed(self):
         if self.is_processing:

@@ -5,6 +5,7 @@ High-performance desktop application for 360° video preprocessing. This tool ge
 ## Features
 
 - **360° to Rectilinear:** Reproject equirectangular video to pinhole views with configurable FOV and overlap.
+- **FLAT Mode:** Process regular videos by extracting full frames at specified intervals.
 - **Advanced Camera Control:**
     - **Dynamic Camera Count:** Configure 2 to 36 cameras with intelligent distribution (Ring for <6, Cube for 6, Fibonacci Sphere for >6).
     - **Inclination:** Adjust camera pitch (Standard 0°, High -20°, Low +20°) for different capture scenarios.
@@ -12,6 +13,7 @@ High-performance desktop application for 360° video preprocessing. This tool ge
 - **Flexible Extraction:** Control extraction frequency by Seconds or Frames.
 - **AI Operator Removal:** Automatically detect and mask/remove people (operators) from the footage using YOLOv8.
 - **Batch Processing:** Process multiple heavy (4K-8K) video files efficiently with individual settings.
+- **GUI & CLI:** Use the graphical interface or command-line for automation and scripting.
 - **Cross-Platform:** Built with Python & PySide6 for macOS (Apple Silicon optimized) and Windows.
 
 ## Installation
@@ -36,6 +38,8 @@ High-performance desktop application for 360° video preprocessing. This tool ge
 
 ## Usage
 
+### GUI (Graphical Interface)
+
 Run the application:
 
 *   **macOS / Linux:**
@@ -46,6 +50,35 @@ Run the application:
 *   **Windows:**
     ```bash
     python src/main.py
+    ```
+
+### CLI (Command Line Interface)
+
+Process videos from the terminal without launching the GUI:
+
+*   **Basic 360° processing:**
+    ```bash
+    python3 src/cli.py video360.mp4
+    ```
+
+*   **FLAT video with blur filter:**
+    ```bash
+    python3 src/cli.py --mode flat --blur-filter --blur-threshold 150 video.mp4
+    ```
+
+*   **AI masking:**
+    ```bash
+    python3 src/cli.py --mode flat --ai-mode mask video.mp4
+    ```
+
+*   **Batch processing:**
+    ```bash
+    python3 src/cli.py --mode flat video1.mp4 video2.mp4 video3.mp4
+    ```
+
+*   **View all options:**
+    ```bash
+    python3 src/cli.py --help
     ```
 
 ### Batch Processing Workflow
